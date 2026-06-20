@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>NICRA / Natural-Farming / Agri-Drone / Seed-Hub Uploader</title>
+<style>
+  :root { --bg:#0f1521; --panel:#161e2e; --line:#27344a; --ink:#e7edf6; --mut:#90a0b8; --accent:#3b82f6; --ok:#22c55e; --warn:#f59e0b; --bad:#ef4444; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px/1.45 system-ui,Segoe UI,Roboto,Arial; background:var(--bg); color:var(--ink); }
+  header { padding:16px 22px; border-bottom:1px solid var(--line); background:var(--panel); position:sticky; top:0; z-index:5; }
+  header h1 { margin:0; font-size:16px; }
+  header .sub { color:var(--mut); font-size:12px; margin-top:3px; }
+  .wrap { padding:18px 22px; max-width:1500px; margin:0 auto; }
+  .row { display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+  button { background:var(--accent); color:#fff; border:0; border-radius:7px; padding:9px 14px; font-weight:600; cursor:pointer; }
+  button.ghost { background:transparent; border:1px solid var(--line); color:var(--ink); }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  .pill { font-size:11px; padding:2px 8px; border-radius:99px; border:1px solid var(--line); color:var(--mut); }
+  .pill.ok { color:var(--ok); border-color:#1f5132; } .pill.bad { color:var(--bad); border-color:#5b2424; } .pill.warn { color:var(--warn); border-color:#5b4717; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:10px; margin:14px 0; overflow:hidden; }
+  .card > .head { display:flex; justify-content:space-between; align-items:center; gap:10px; padding:10px 14px; cursor:pointer; }
+  .card > .head h3 { margin:0; font-size:14px; }
+  .card > .body { display:none; border-top:1px solid var(--line); overflow:auto; max-height:62vh; }
+  .card.open > .body { display:block; }
+  table { border-collapse:collapse; width:100%; font-size:12px; }
+  th,td { border:1px solid var(--line); padding:4px 6px; text-align:left; white-space:nowrap; vertical-align:top; }
+  th { position:sticky; top:0; background:#1b2436; z-index:1; }
+  td input { background:#0e1622; color:var(--ink); border:1px solid #223; border-radius:4px; padding:3px 5px; min-width:90px; font:inherit; }
+  td.kvk { min-width:230px; }
+  select { background:#0e1622; color:var(--ink); border:1px solid #2c3c57; border-radius:5px; padding:4px 6px; font:inherit; max-width:260px; }
+  .badge { font-size:10px; padding:1px 6px; border-radius:99px; }
+  .badge.exact { background:#16331f; color:var(--ok); } .badge.fuzzy { background:#3a2f12; color:var(--warn); }
+  .delcol { width:30px; text-align:center; }
+  .x { color:var(--bad); cursor:pointer; font-weight:700; }
+  .warnrow td { background:#1e1707; }
+  .wtip { color:var(--warn); cursor:help; }
+  #drop { border:2px dashed var(--line); border-radius:12px; padding:34px; text-align:center; color:var(--mut); background:var(--panel); }
+  #drop.hot { border-color:var(--accent); color:var(--ink); }
+  .muted { color:var(--mut); } .small { font-size:12px; }
+  pre { white-space:pre-wrap; background:#0c121d; border:1px solid var(--line); border-radius:8px; padding:10px; font-size:12px; }
+  .bar { position:sticky; bottom:0; background:var(--panel); border-top:1px solid var(--line); padding:12px 22px; display:flex; gap:14px; align-items:center; z-index:5; }
+</style>
+</head>
+<body>
+<header>
+  <h1>NICRA · Natural-Farming · Agri-Drone · Seed-Hub — bulk uploader</h1>
+  <div class="sub">Superadmin scrape (many KVKs in one file). Each row is matched to its own KVK. Preview → fix unmatched KVKs → push. <span id="dbpill" class="pill">db…</span></div>
+</header>
+
+<div class="wrap">
+  <div id="drop">
+    <p><b>Drop the scraped <code>.json</code> or <code>.xlsx</code> here</b> — or
+      <label style="color:var(--accent);cursor:pointer;text-decoration:underline">browse<input id="file" type="file" accept=".json,.xlsx" hidden></label></p>
+    <p class="small muted">Nothing is written until you click <b>Push to database</b>. Point this tool at a TEST database first.</p>
+  </div>
+
+  <div id="summary" style="display:none"></div>
+  <div id="forms"></div>
+  <div id="result"></div>
+</div>
+
+<div class="bar" id="bar" style="display:none">
+  <button id="push">Push to database ⬆</button>
+  <button class="ghost" id="reset">Start over</button>
+  <span id="status" class="muted small"></span>
+</div>
+
+<script>
+const $ = (s,el=document)=>el.querySelector(s);
+const ce = (t,props={})=>Object.assign(document.createElement(t),props);
+let PREVIEW = null;
+
+fetch('/api/health').then(r=>r.json()).then(h=>{
+  const p=$('#dbpill');
+  if(h.ok){ p.textContent='DB ok · '+h.kvks+' KVKs · '+h.db; p.className='pill ok'; }
+  else { p.textContent='DB error: '+(h.error||''); p.className='pill bad'; }
+}).catch(()=>{ $('#dbpill').textContent='DB unreachable'; $('#dbpill').className='pill bad'; });
+
+// ---------- upload ----------
+const drop=$('#drop');
+['dragenter','dragover'].forEach(e=>drop.addEventListener(e,ev=>{ev.preventDefault();drop.classList.add('hot');}));
+['dragleave','drop'].forEach(e=>drop.addEventListener(e,ev=>{ev.preventDefault();drop.classList.remove('hot');}));
+drop.addEventListener('drop',ev=>{ const f=ev.dataTransfer.files[0]; if(f) handleFile(f); });
+$('#file').addEventListener('change',ev=>{ const f=ev.target.files[0]; if(f) handleFile(f); });
+
+async function handleFile(file){
+  setStatus('Reading '+file.name+' …');
+  try{
+    let body;
+    if(file.name.toLowerCase().endsWith('.xlsx')){
+      const buf=await file.arrayBuffer();
+      body={ xlsxBase64: btoa(String.fromCharCode(...new Uint8Array(buf))) };
+    } else {
+      const txt=await file.text();
+      body={ data: JSON.parse(txt) };
+    }
+    setStatus('Mapping & matching KVKs …');
+    const res=await fetch('/api/preview',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const json=await res.json();
+    if(!res.ok) throw new Error(json.error||'preview failed');
+    PREVIEW=json; renderPreview();
+  }catch(e){ alert('Could not read file: '+e.message); setStatus(''); }
+}
+
+// ---------- render ----------
+function renderPreview(){
+  drop.style.display='none';
+  $('#result').innerHTML='';
+  const s=PREVIEW.totals;
+  const sum=$('#summary'); sum.style.display='block';
+  let html=`<div class="card open"><div class="head"><h3>Summary</h3>
+    <span class="row">
+      <span class="pill">${s.forms} forms</span>
+      <span class="pill">${s.rows} rows</span>
+      <span class="pill ${s.rowsNeedingKvk? 'warn':'ok'}">${s.rowsNeedingKvk} rows need a KVK</span>
+    </span></div><div class="body" style="padding:12px 14px">`;
+  if(PREVIEW.unmatchedKvkNames.length){
+    html+=`<p class="small"><b>Unmatched KVK names</b> (pick the right KVK on those rows below):</p>
+      <p class="small muted">${PREVIEW.unmatchedKvkNames.map(n=>`“${n}”`).join(', ')}</p>`;
+  } else { html+=`<p class="small" style="color:var(--ok)">✓ Every row matched a KVK automatically.</p>`; }
+  if(PREVIEW.unmappedSheets.length){
+    html+=`<p class="small"><b>Sheets in the file this tool does not handle</b> (ignored): <span class="muted">${PREVIEW.unmappedSheets.join(', ')}</span></p>`;
+  }
+  html+=`</div></div>`;
+  sum.innerHTML=html;
+
+  const host=$('#forms'); host.innerHTML='';
+  PREVIEW.forms.forEach((f,fi)=> host.appendChild(formCard(f,fi)));
+  $('#bar').style.display='flex';
+  setStatus('');
+}
+
+function formCard(f,fi){
+  const card=ce('div',{className:'card'});
+  const need=f.needsKvk? `<span class="pill warn">${f.needsKvk} need KVK</span>`:'';
+  const miss=f.modelMissing? `<span class="pill bad">model "${f.model}" not found in DB</span>`:'';
+  card.innerHTML=`<div class="head"><h3>${f.label} <span class="muted small">→ ${f.model}</span></h3>
+    <span class="row"><span class="pill">${f.rows.length} rows</span><span class="pill ok">${f.matched} matched</span>${need}${miss}</span></div>
+    <div class="body"></div>`;
+  card.querySelector('.head').addEventListener('click',()=>card.classList.toggle('open'));
+
+  const body=card.querySelector('.body');
+  // bulk-assign control for unmatched rows
+  if(f.needsKvk){
+    const bulk=ce('div',{className:'row',style:'padding:8px 10px;border-bottom:1px solid var(--line)'});
+    bulk.innerHTML=`<span class="small muted">Set all unmatched rows to:</span>`;
+    const sel=kvkSelect(null); bulk.appendChild(sel);
+    const btn=ce('button',{className:'ghost',textContent:'Apply'});
+    btn.addEventListener('click',()=>{ const v=Number(sel.value)||null; f.rows.forEach(r=>{ if(!r._kvkId){ r._kvkId=v; } }); renderTable(); });
+    bulk.appendChild(btn); body.appendChild(bulk);
+  }
+
+  const tableWrap=ce('div'); body.appendChild(tableWrap);
+  renderTableInto(tableWrap,f);
+  card._refresh=()=>renderTableInto(tableWrap,f);
+  if(f.needsKvk) card.classList.add('open');
+  return card;
+
+  function renderTable(){ renderTableInto(tableWrap,f); }
+}
+
+function kvkSelect(current){
+  const sel=ce('select');
+  sel.appendChild(ce('option',{value:'',textContent:'— choose KVK —'}));
+  PREVIEW.kvks.forEach(k=>{ const o=ce('option',{value:k.kvkId,textContent:`${k.kvkId} · ${k.kvkName}`}); if(current===k.kvkId)o.selected=true; sel.appendChild(o); });
+  return sel;
+}
+
+function renderTableInto(host,f){
+  const cols = columnsOf(f);
+  const tbl=ce('table');
+  let head='<tr><th class="delcol"></th><th class="kvk">KVK</th>'+cols.map(c=>`<th>${c}</th>`).join('')+'</tr>';
+  tbl.innerHTML='<thead>'+head+'</thead>';
+  const tb=ce('tbody');
+  f.rows.forEach((r,ri)=>{
+    const tr=ce('tr'); if(r._warnings && r._warnings.length) tr.className='warnrow';
+    // delete
+    const del=ce('td',{className:'delcol'}); const x=ce('span',{className:'x',textContent:'✕',title:'remove row'});
+    x.addEventListener('click',()=>{ f.rows.splice(ri,1); renderTableInto(host,f); });
+    del.appendChild(x); tr.appendChild(del);
+    // kvk
+    const kc=ce('td',{className:'kvk'});
+    if(r._kvkId){
+      const k=PREVIEW.kvks.find(k=>k.kvkId===r._kvkId);
+      kc.innerHTML=`<span class="badge ${r._match||'exact'}">${r._match||'set'}</span> ${k?('#'+k.kvkId+' '+k.kvkName):('#'+r._kvkId)} `;
+      const chg=ce('span',{className:'small muted',textContent:'change',style:'cursor:pointer;text-decoration:underline;margin-left:6px'});
+      chg.addEventListener('click',()=>{ r._kvkId=null; renderTableInto(host,f); });
+      kc.appendChild(chg);
+      if(r._kvkName) kc.appendChild(ce('div',{className:'small muted',textContent:'from: '+r._kvkName}));
+    } else {
+      const sel=kvkSelect(null); sel.addEventListener('change',()=>{ r._kvkId=Number(sel.value)||null; });
+      kc.appendChild(ce('div',{className:'small',style:'color:var(--warn);margin-bottom:3px',textContent:'⚠ '+(r._kvkName||'(blank)')}));
+      kc.appendChild(sel);
+    }
+    tr.appendChild(kc);
+    // data cells
+    cols.forEach(c=>{
+      const td=ce('td');
+      if(r.data.__error){ td.textContent=''; }
+      else {
+        const inp=ce('input',{value: r.data[c]==null?'':String(r.data[c])});
+        inp.addEventListener('input',()=>{ r.data[c]=inp.value; });
+        td.appendChild(inp);
+      }
+      tr.appendChild(td);
+    });
+    tb.appendChild(tr);
+    if(r._warnings && r._warnings.length){
+      const wtr=ce('tr',{className:'warnrow'}); const wtd=ce('td',{colSpan:cols.length+2});
+      wtd.innerHTML='<span class="wtip">⚠ '+r._warnings.join(' · ')+'</span>'; wtr.appendChild(wtd); tb.appendChild(wtr);
+    }
+  });
+  tbl.appendChild(tb);
+  host.innerHTML=''; host.appendChild(tbl);
+}
+
+function columnsOf(f){
+  const set=[];
+  f.rows.forEach(r=>{ if(r.data && !r.data.__error) Object.keys(r.data).forEach(k=>{ if(k!=='kvkId' && !set.includes(k)) set.push(k); }); });
+  return set;
+}
+
+// ---------- commit ----------
+$('#push').addEventListener('click',async ()=>{
+  const stillNeed=PREVIEW.forms.reduce((a,f)=>a+f.rows.filter(r=>!r._kvkId).length,0);
+  if(stillNeed){ if(!confirm(stillNeed+' row(s) still have no KVK and will be SKIPPED. Push anyway?')) return; }
+  const forms=PREVIEW.forms.map(f=>({ sheet:f.sheet, model:f.model,
+    records: f.rows.map(r=>Object.assign({}, r.data, {_kvkId:r._kvkId, _kvkName:r._kvkName})) }))
+    .filter(f=>f.records.length);
+  setStatus('Pushing …'); $('#push').disabled=true;
+  try{
+    const res=await fetch('/api/commit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({forms})});
+    const json=await res.json();
+    if(!res.ok) throw new Error(json.error||'commit failed');
+    showResult(json);
+  }catch(e){ alert('Push failed: '+e.message); }
+  finally{ $('#push').disabled=false; setStatus(''); }
+});
+
+function showResult(rep){
+  const t=rep.totals;
+  let html=`<div class="card open"><div class="head"><h3>Import result</h3>
+    <span class="row"><span class="pill ok">${t.inserted} inserted</span><span class="pill">${t.skipped} already there</span>
+    <span class="pill ${t.failed?'bad':''}">${t.failed} failed</span><span class="pill ${t.noKvk?'warn':''}">${t.noKvk} skipped (no KVK)</span></span></div>
+    <div class="body" style="padding:10px 14px"><table><thead><tr><th>Form</th><th>inserted</th><th>skipped</th><th>failed</th><th>no-KVK</th><th>errors</th></tr></thead><tbody>`;
+  rep.forms.forEach(f=>{
+    const errs=(f.failures||[]).map(x=>`row ${x.row} (kvk ${x.kvkId}): ${x.reason}`).join('\n');
+    html+=`<tr><td>${f.label}</td><td>${f.inserted}</td><td>${f.skipped}</td><td>${f.failed}</td><td>${f.noKvk}</td><td><pre style="margin:0;border:0;background:none;padding:0">${errs||''}</pre></td></tr>`;
+  });
+  html+=`</tbody></table></div></div>`;
+  $('#result').innerHTML=html;
+  $('#result').scrollIntoView({behavior:'smooth'});
+}
+
+$('#reset').addEventListener('click',()=>location.reload());
+function setStatus(t){ $('#status').textContent=t||''; }
+</script>
+</body>
+</html>

@@ -1,0 +1,16 @@
+{
+  "name": "scrape-upload",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Standalone uploader for NICRA / Natural-Farming / Agri-Drone / Seed-Hub scrapes. Superadmin-side, multi-KVK: each row resolves to its own KVK. Preview -> edit -> push to DB.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "exceljs": "^4.4.0",
+    "express": "^4.21.2"
+  }
+}
