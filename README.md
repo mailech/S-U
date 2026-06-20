@@ -81,12 +81,26 @@ node scripts/validate-mappings.js
 - **Agri-Drone demonstrations** link to the KVK's Agri-Drone **intro** record — so the intro sheet
   must be imported first (the tool inserts intro before demonstrations automatically).
 
-## Deploying as its own repo (later)
+## Deploy (Render)
 
-During development this reuses the main backend's generated Prisma client (via `config/db.js`),
-bound to **this** app's `DATABASE_URL`. To make it fully standalone:
+This project is **fully self-contained** — it bundles its own Prisma schema (`prisma/`) and client
+(`config/prisma.js`), so it runs anywhere with no dependency on the main backend.
 
-1. Copy `backend/config/prisma.js` and the `backend/prisma/` schema folder into this project.
-2. `npm i @prisma/client pg @prisma/adapter-pg` and run `prisma generate`.
-3. Change the single require in `config/db.js` (and the `PrismaDmmf` require in `lib/engine.js`)
-   to the local copy. Nothing else changes.
+On [Render](https://render.com) → **New → Web Service** → connect this repo:
+
+| Field | Value |
+|---|---|
+| Language | Node |
+| Branch | `main` |
+| Region | Singapore (same region as the Neon DB) |
+| Root Directory | *(blank)* |
+| Build Command | `npm install` |
+| Start Command | `npm start` |
+| Instance Type | Free |
+| Environment Variable | `DATABASE_URL` = your Postgres URL (test DB first) |
+
+`npm install` runs `prisma generate` automatically (a `postinstall` hook). The app reads `PORT` from
+the environment (Render sets it), so no port config is needed.
+
+> There is **no login** — anyone with the URL can use it and it writes to whatever `DATABASE_URL`
+> points at. Keep it on a **test database** unless you intend writes to go live.

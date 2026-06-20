@@ -3,8 +3,7 @@
 // Catches typos/wrong field names before we ever touch a database.
 //
 //   node scripts/validate-mappings.js
-const path = require('path');
-const { Prisma } = require(path.join(__dirname, '..', '..', 'backend', 'node_modules', '@prisma', 'client'));
+const { Prisma } = require('@prisma/client');
 const { buildForms } = require('../lib/forms');
 
 function scalars(model) {
