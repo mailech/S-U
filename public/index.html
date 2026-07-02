@@ -352,9 +352,16 @@ function renderForms() {
       return '<tr' + cls + '><td style="white-space:nowrap">' + numc + '</td><td class="kvk">' + renderKvk(fi, ri, r) + '</td>' + cells + '</tr>';
     }).join('');
 
+    const resultsBanner = (nResults || nDone)
+      ? '<div class="box warn" style="margin:0 0 10px">ℹ️ '
+        + (nResults ? '<b>' + nResults + ' row(s) are already in the database — only their RESULTS will be pushed.</b> The existing OFT records will NOT be changed, so you don’t need to fill their form fields. ' : '')
+        + (nDone ? '<b>' + nDone + ' row(s)</b> already have results too and will be skipped.' : '')
+        + '</div>'
+      : '';
+
     const open = (errs || mandEmpty || f.editing) ? ' open' : '';
     return '<details class="form-acc"' + open + '><summary>' + esc(f.label) + ' <span class="muted">→ ' + esc(f.model) + '</span>' + badges + ' ' + editBtn + '</summary>'
-      + '<div class="body">' + issueTable + bulk + legend + '<div class="scroll"><table><thead>' + head + '</thead><tbody>' + grid + '</tbody></table></div>' + oftPreview(f) + '</div></details>';
+      + '<div class="body">' + resultsBanner + issueTable + bulk + legend + '<div class="scroll"><table><thead>' + head + '</thead><tbody>' + grid + '</tbody></table></div>' + oftPreview(f) + '</div></details>';
   }).join('');
 }
 
