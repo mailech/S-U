@@ -68,6 +68,8 @@
   td.kvk { min-width:210px; white-space:normal; }
   tr.nokvk td { background:#fff7f7; }
   tr.haswarn td { background:#fffdf6; }
+  tr.rowresult td { background:#fffbeb; }
+  tr.rowdone td { opacity:.5; }
   .lnk { background:none; border:0; color:#2563eb; font-size:12px; cursor:pointer; padding:0 4px; font-weight:600; }
   .lnk:hover { text-decoration:underline; }
   .req { color:#dc2626; font-weight:700; }
@@ -227,8 +229,26 @@ function buildState() {
     sheet: f.sheet, label: f.label, model: f.model, modelMissing: f.modelMissing,
     fkFields: f.fkFields || {}, requiredFields: f.requiredFields || [], fieldTypes: f.fieldTypes || {},
     cols: (f.fields && f.fields.length) ? f.fields.slice() : derivedCols(f), editing: false,
-    rows: f.rows.map(r => ({ data: Object.assign({}, r.data), _kvkId: r._kvkId, _kvkName: r._kvkName, _match: r._match, _issues: (r._issues || []).slice(), _editKvk: false }))
+    rows: f.rows.map(r => ({ data: Object.assign({}, r.data), _kvkId: r._kvkId, _kvkName: r._kvkName, _match: r._match, _issues: (r._issues || []).slice(), _editKvk: false, _db: r._db || null }))
   }));
+}
+
+// Per-row import mode, based on what's already in the DB (only OFT rows carry _db):
+//   'done'    — the record AND its results already exist (or there are no results to push) → skip it.
+//   'results' — the record exists but its results are missing, and the scrape has results → push
+//               ONLY the results (never re-write the existing record, so cleaning errors is safe).
+//   'new'     — not in the DB yet → normal full import.
+function rowMode(r) {
+  const db = r._db;
+  if (!db || !db.existsParent) return 'new';
+  if (db.existsResult) return 'done';           // already fully imported
+  return db.hasIncomingResult ? 'results' : 'done';
+}
+function rowChip(r) {
+  const m = rowMode(r);
+  if (m === 'results') return ' <span class="badge w" title="This OFT is already in the database, but its results are missing. Only the results will be imported — the existing OFT record is not touched.">results-only</span>';
+  if (m === 'done' && r._db && r._db.existsParent) return ' <span class="badge ok" title="Already in the database (record + results). This row will be skipped.">already imported</span>';
+  return '';
 }
 function derivedCols(f) { const c = []; f.rows.forEach(r => { if (r.data && !r.data.__error) Object.keys(r.data).forEach(k => { if (k !== 'kvkId' && !k.startsWith('_') && !c.includes(k)) c.push(k); }); }); return c; }
 
@@ -240,7 +260,10 @@ function mandatoryIssues(f, r) {
   f.requiredFields.forEach(c => { if (isEmptyVal(r.data[c]) && !(r.data._fk && r.data._fk[c])) out.push({ field: c, message: 'Mandatory on the new site — empty, please fill (or use Auto-fill)', severity: 'warn' }); });
   return out;
 }
-function allIssues(f, r) { return r._issues.concat(mandatoryIssues(f, r)); }
+// results-only / already-done rows never write the scalar record, so their scalar errors and
+// mandatory blanks must NOT block the import (that's the whole point — don't force re-preparing
+// data that could overwrite what's already in the DB).
+function allIssues(f, r) { if (rowMode(r) !== 'new') return []; return r._issues.concat(mandatoryIssues(f, r)); }
 function computeTotals() {
   let rows = 0, mapped = 0, errors = 0, warnings = 0, need = 0;
   IMP.forms.forEach(f => f.rows.forEach(r => {
@@ -261,7 +284,7 @@ function renderStats(t) {
 // fill every empty mandatory cell: text -> "A", numbers -> 0 (skips dropdowns/dates/enums)
 function fillRows(f) {
   f.rows.forEach(r => {
-    if (r.data.__error) return;
+    if (r.data.__error || rowMode(r) !== 'new') return;   // don't touch rows we won't scalar-write
     f.requiredFields.forEach(c => {
       if (f.fkFields[c] || /Id$/.test(c) || !isEmptyVal(r.data[c])) return;  // never fake a foreign key
       const t = f.fieldTypes[c] || 'String';
@@ -291,10 +314,14 @@ function renderForms() {
     const rowIssues = f.rows.map(r => allIssues(f, r));
     const errs = rowIssues.reduce((a, is) => a + is.filter(i => i.severity === 'error').length, 0);
     const warns = rowIssues.reduce((a, is) => a + is.filter(i => i.severity === 'warn').length, 0);
-    const mandEmpty = f.rows.reduce((a, r) => a + f.requiredFields.filter(c => isEmptyVal(r.data[c]) && !(r.data._fk && r.data._fk[c])).length, 0);
+    const mandEmpty = f.rows.reduce((a, r) => a + (rowMode(r) !== 'new' ? 0 : f.requiredFields.filter(c => isEmptyVal(r.data[c]) && !(r.data._fk && r.data._fk[c])).length), 0);
+    const nResults = f.rows.filter(r => rowMode(r) === 'results').length;
+    const nDone = f.rows.filter(r => rowMode(r) === 'done' && r._db && r._db.existsParent).length;
     const badges = '<span class="badge n">' + f.rows.length + ' rows · ' + f.cols.length + ' fields</span>'
       + (errs ? '<span class="badge f">✗ ' + errs + '</span>' : '')
       + (warns ? '<span class="badge w">⚠ ' + warns + '</span>' : '')
+      + (nResults ? '<span class="badge w" title="OFT already in DB — only results will be imported">' + nResults + ' results-only</span>' : '')
+      + (nDone ? '<span class="badge ok" title="already fully in the DB — skipped">' + nDone + ' already imported</span>' : '')
       + (f.modelMissing ? '<span class="badge f">model missing</span>' : '');
     const editBtn = '<button class="lnk" onclick="toggleEdit(event,' + fi + ')">' + (f.editing ? '✓ done editing' : '✎ edit values') + '</button>';
 
@@ -316,8 +343,11 @@ function renderForms() {
 
     const head = '<tr><th>#</th><th class="kvk">KVK <span class="req">*</span></th>' + f.cols.map(c => '<th>' + pretty(c) + (f.requiredFields.includes(c) ? ' <span class="req">*</span>' : '') + '</th>').join('') + '</tr>';
     const grid = f.rows.map((r, ri) => {
-      const cls = !r._kvkId ? ' class="nokvk"' : (rowIssues[ri].some(i => i.severity === 'warn') ? ' class="haswarn"' : '');
-      const numc = ri + (f.editing ? ' <button class="lnk" title="delete row" onclick="removeRow(' + fi + ',' + ri + ')">✕</button>' : '');
+      const m = rowMode(r);
+      let cn = !r._kvkId ? 'nokvk' : (rowIssues[ri].some(i => i.severity === 'warn') ? 'haswarn' : '');
+      if (m === 'done') cn += ' rowdone'; else if (m === 'results') cn += ' rowresult';
+      const cls = cn.trim() ? ' class="' + cn.trim() + '"' : '';
+      const numc = ri + rowChip(r) + (f.editing ? ' <button class="lnk" title="delete row" onclick="removeRow(' + fi + ',' + ri + ')">✕</button>' : '');
       const cells = f.cols.map(c => renderCell(fi, ri, c, r.data)).join('');
       return '<tr' + cls + '><td style="white-space:nowrap">' + numc + '</td><td class="kvk">' + renderKvk(fi, ri, r) + '</td>' + cells + '</tr>';
     }).join('');
@@ -346,7 +376,9 @@ function oftPreview(f) {
     const seg = (label, v) => v ? '<div class="seg"><b>' + label + ':</b> ' + esc(v) + '</div>' : '';
     const report = '<div class="oftrep">' + seg('Final recommendation', rp.finalRecommendation) + seg('Result', rp.resultText)
       + seg('Constraints & feedback', rp.constraintsFeedback) + seg('Farmers’ participation', rp.farmersParticipationProcess) + '</div>';
-    return '<div class="oftcard"><div class="t">' + esc(r.data.title) + '</div><div class="k">' + esc(kn) + ' · ' + (o.tables || []).length + ' result table(s)</div>'
+    const st = rowMode(r) === 'results' ? ' <span class="badge w">OFT exists · importing results only</span>'
+      : (rowMode(r) === 'done' && r._db && r._db.existsParent ? ' <span class="badge ok">already imported · skipped</span>' : '');
+    return '<div class="oftcard"><div class="t">' + esc(r.data.title) + st + '</div><div class="k">' + esc(kn) + ' · ' + (o.tables || []).length + ' result table(s)</div>'
       + (chips ? '<div class="oftchips">' + chips + '</div>' : '') + tables + report + '</div>';
   }).join('');
   return '<div class="oftprev"><div class="hd">▼ Result preview — how these tables will appear on the site</div>' + cards + '</div>';
@@ -440,16 +472,21 @@ function renderDest() {
 commitBtn.onclick = async () => {
   clearError();
   const sel = ($('destKvk') && $('destKvk').value) ? Number($('destKvk').value) : null;
-  const keep = (r) => r._kvkId && (!sel || r._kvkId === sel);
-  const count = IMP.forms.reduce((a, f) => a + f.rows.filter(keep).length, 0);
-  if (!count) return showError(sel ? 'No rows for that KVK.' : 'Nothing to import.');
+  // import 'new' (full) and 'results' (results-only) rows; never send 'done' rows (already in DB).
+  const keep = (r) => r._kvkId && (!sel || r._kvkId === sel) && rowMode(r) !== 'done';
+  const kept = IMP.forms.flatMap(f => f.rows.filter(keep));
+  const count = kept.length;
+  const nResults = kept.filter(r => rowMode(r) === 'results').length;
+  const nNew = count - nResults;
+  if (!count) return showError(sel ? 'No rows to import for that KVK.' : 'Nothing to import — everything is already in the database.');
   const dest = sel ? ('KVK #' + sel + ' ' + kvkName(sel)) : ('ALL KVKs in the file');
   const need = IMP.forms.reduce((a, f) => a + f.rows.filter(r => !r._kvkId).length, 0);
   if (!sel && need && !confirm(need + ' row(s) have no KVK and will be SKIPPED. Continue?')) return;
-  if (!confirm('Import ' + count + ' row(s) into ' + dest + '?\n\nThis writes to the database.')) return;
+  const breakdown = nNew + ' full row(s)' + (nResults ? ' + ' + nResults + ' results-only (existing OFTs, results attached — record untouched)' : '');
+  if (!confirm('Import ' + breakdown + ' into ' + dest + '?\n\nThis writes to the database.')) return;
   commitBtn.disabled = true; commitBtn.textContent = 'Importing…';
   try {
-    const forms = IMP.forms.map(f => ({ sheet: f.sheet, model: f.model, records: f.rows.filter(keep).map(r => Object.assign({}, r.data, { _kvkId: r._kvkId, _kvkName: r._kvkName })) })).filter(f => f.records.length);
+    const forms = IMP.forms.map(f => ({ sheet: f.sheet, model: f.model, records: f.rows.filter(keep).map(r => Object.assign({}, r.data, { _kvkId: r._kvkId, _kvkName: r._kvkName, _resultsOnly: rowMode(r) === 'results' })) })).filter(f => f.records.length);
     const r = await fetch('/api/commit', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ forms }) });
     const j = await r.json();
     if (!r.ok) throw new Error(j.error || 'Import failed');
@@ -462,11 +499,11 @@ function renderCommit(rep) {
   const t = rep.totals;
   const rows = (rep.forms || []).map(f => {
     const errs = (f.failures || []).map(x => 'row ' + x.row + ' (kvk ' + x.kvkId + '): ' + esc(x.reason)).join('<br>');
-    return '<tr><td>' + esc(f.label) + '</td><td>' + f.inserted + '</td><td>' + f.skipped + '</td><td>' + f.failed + '</td><td>' + f.noKvk + '</td><td class="muted" style="white-space:normal">' + errs + '</td></tr>';
+    return '<tr><td>' + esc(f.label) + '</td><td>' + f.inserted + '</td><td>' + (f.resultsOnly || 0) + '</td><td>' + f.skipped + '</td><td>' + f.failed + '</td><td>' + f.noKvk + '</td><td class="muted" style="white-space:normal">' + errs + '</td></tr>';
   }).join('');
   $('commitResult').innerHTML = '<div class="box ' + (t.failed ? 'bad' : 'ok') + '" style="margin-top:14px">'
-    + (t.failed ? '⚠️' : '✅') + ' Imported — <b>' + t.inserted + '</b> new rows, ' + t.skipped + ' already present, ' + t.failed + ' failed, ' + t.noKvk + ' skipped (no KVK).</div>'
-    + '<div class="scroll" style="margin-top:10px"><table><thead><tr><th>Form</th><th>inserted</th><th>skipped</th><th>failed</th><th>no-KVK</th><th>errors</th></tr></thead><tbody>' + rows + '</tbody></table></div>';
+    + (t.failed ? '⚠️' : '✅') + ' Imported — <b>' + t.inserted + '</b> new rows, <b>' + (t.resultsOnly || 0) + '</b> results-only (attached to existing OFTs), ' + t.skipped + ' already present, ' + t.failed + ' failed, ' + t.noKvk + ' skipped (no KVK).</div>'
+    + '<div class="scroll" style="margin-top:10px"><table><thead><tr><th>Form</th><th>inserted</th><th>results-only</th><th>skipped</th><th>failed</th><th>no-KVK</th><th>errors</th></tr></thead><tbody>' + rows + '</tbody></table></div>';
 }
 </script>
 </body>

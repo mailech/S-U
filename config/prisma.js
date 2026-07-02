@@ -168,10 +168,13 @@ if (isAccelerate) {
         log: process.env.NODE_ENV === 'development' ? ['error', 'warn'] : ['error'],
     });
 } else {
+    // Local Postgres (localhost/127.0.0.1) doesn't support SSL; Neon/prod does.
+    const isLocalDb = /@(localhost|127\.0\.0\.1)[:/]/.test(process.env.DATABASE_URL);
+
     // Create a PostgreSQL connection pool configured for Neon serverless
     const pool = new Pool({
         connectionString: process.env.DATABASE_URL,
-        ssl: { rejectUnauthorized: false }, // Allow self-signed certificates
+        ssl: isLocalDb ? false : { rejectUnauthorized: false }, // Allow self-signed certificates (skip for local)
         max: 20,
         min: 0, // Don't maintain idle connections — Neon suspends them
         idleTimeoutMillis: 20000, // Release idle connections before Neon drops them
